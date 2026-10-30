@@ -1,0 +1,40 @@
+plugins {
+    id(ThunderbirdPlugins.Library.androidCompose)
+}
+
+android {
+    namespace = "app.k9mail.feature.migration.qrcode"
+    resourcePrefix = "migration_qrcode_"
+
+    testOptions {
+        unitTests {
+            isIncludeAndroidResources = true
+        }
+    }
+}
+
+dependencies {
+    implementation(projects.core.common)
+    implementation(projects.core.android.account)
+    implementation(projects.core.featureflag)
+    implementation(projects.feature.mail.folder.api)
+    implementation(projects.legacy.common)
+    implementation(projects.legacy.logging)
+    implementation(projects.legacy.ui.base)
+    implementation(projects.core.ui.contract)
+
+    implementation(libs.androidx.camera.core)
+    implementation(libs.androidx.camera.camera2)
+    implementation(libs.androidx.camera.lifecycle)
+    implementation(libs.androidx.camera.view)
+    implementation(libs.moshi)
+    implementation(libs.okio)
+    implementation(libs.zxing)
+
+    testImplementation(projects.core.ui.compose.testing)
+}
+
+codeCoverage {
+    branchCoverage = 0
+    lineCoverage = 1
+}

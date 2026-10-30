@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources xmlns:xliff="urn:oasis:names:tc:xliff:document:1.2">
+    <string name="onboarding_welcome_start_button">Iniziamo</string>
+    <string name="onboarding_welcome_import_button">Importa impostazioni</string>
+    <string name="onboarding_welcome_text">Un\'applicazione di posta elettronica per Android open source, incentrata sulla privacy e priva di pubblicità.</string>
+    <string name="onboarding_welcome_developed_by">Sviluppato da Alessandro Bronchi / ABGnofle Software, sulla base di Thunderbird Mobile (un progetto open source di MZLA Technologies e di una community globale di volontari). Gnoflemail è un progetto indipendente, non affiliato a Mozilla né a MZLA.</string>
+</resources>

@@ -1,0 +1,53 @@
+package net.thunderbird.feature.account.storage.legacy
+
+import androidx.annotation.Discouraged
+import net.thunderbird.core.android.account.LegacyAccount
+import net.thunderbird.core.preference.storage.Storage
+import net.thunderbird.core.preference.storage.StorageEditor
+import net.thunderbird.feature.account.AccountId
+import net.thunderbird.feature.account.storage.profile.AvatarDto
+import net.thunderbird.feature.account.storage.profile.ProfileDto
+
+/**
+ * Represents a storage handler for a specific data type.
+ *
+ * @param T The type of data that this handler can handle.
+ */
+@Discouraged(
+    message = "This interface is only used to encapsulate the [LegacyAccount] storage handling.",
+)
+interface StorageHandler<T> {
+
+    /**
+     * Loads the data from the storage into the provided object.
+     *
+     * @param accountId The object to load for the given accountId.
+     * @param storage The storage to load the data from.
+     * @return The loaded data.
+     */
+    fun load(accountId: AccountId, storage: Storage): T
+
+    /**
+     * Saves the data from the provided object to the storage.
+     *
+     * @param data The object to save the data from.
+     * @param storage The storage to save the data to.
+     * @param editor The storage editor to use for saving the data.
+     */
+    fun save(data: T, storage: Storage, editor: StorageEditor)
+
+    /**
+     * Deletes the data from the storage.
+     *
+     * @param accountId The data to delete for the given accountId.
+     * @param storage The storage to delete the data from.
+     * @param editor The storage editor to use for deleting the data.
+     */
+    fun delete(accountId: AccountId, storage: Storage, editor: StorageEditor)
+}
+
+interface AccountStorageHandler : StorageHandler<LegacyAccount>
+
+interface ProfileDtoStorageHandler : StorageHandler<ProfileDto>
+
+interface AvatarDtoStorageHandler : StorageHandler<AvatarDto>

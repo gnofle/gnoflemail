@@ -1,0 +1,89 @@
+plugins {
+    id(ThunderbirdPlugins.Library.android)
+    alias(libs.plugins.kotlin.parcelize)
+}
+
+dependencies {
+    api(projects.mail.common)
+    api(projects.backend.api)
+    api(projects.library.htmlCleaner)
+    api(projects.core.mail.mailserver)
+    api(projects.core.android.common)
+    api(projects.core.android.account)
+    api(projects.core.common)
+    api(projects.core.preference.impl)
+    api(projects.core.logging.api)
+    api(projects.core.android.network)
+    api(libs.tb.mobile.components.core.outcome)
+    api(projects.feature.mail.folder.api)
+    api(projects.feature.account.storage.legacy)
+
+    api(projects.feature.search.implLegacy)
+    api(projects.feature.mail.account.api)
+    api(projects.legacy.di)
+    api(projects.legacy.mailstore)
+    api(projects.legacy.message)
+    implementation(projects.legacy.logging)
+    implementation(projects.feature.notification.api)
+
+    implementation(projects.plugins.openpgpApiLib.openpgpApi)
+    implementation(projects.feature.telemetry.api)
+    implementation(projects.core.featureflag)
+
+    api(libs.androidx.annotation)
+
+    implementation(libs.okio)
+    implementation(libs.commons.io)
+    implementation(libs.androidx.work.runtime)
+    implementation(libs.androidx.fragment)
+    implementation(libs.androidx.localbroadcastmanager)
+    implementation(libs.jsoup)
+    implementation(libs.moshi)
+    implementation(libs.mime4j.core)
+    implementation(libs.mime4j.dom)
+    implementation(libs.uri)
+    implementation(projects.feature.navigation.drawer.api)
+    implementation(projects.feature.mail.message.list.api)
+    implementation(projects.feature.mail.message.reader.api)
+    implementation(projects.feature.mail.message.composer.api)
+
+    testImplementation(projects.core.android.account.fake)
+    testImplementation(projects.core.testing)
+    testImplementation(libs.tb.mobile.components.ui.testing)
+    testImplementation(projects.core.android.testing)
+    testImplementation(projects.feature.telemetry.noop)
+    testImplementation(projects.mail.testing)
+    testImplementation(projects.backend.imap)
+    testImplementation(projects.mail.protocols.smtp)
+    testImplementation(projects.legacy.storage)
+    testImplementation(projects.core.android.common)
+
+    testImplementation(libs.kotlin.reflect)
+    testImplementation(libs.robolectric)
+    testImplementation(libs.androidx.test.core)
+    testImplementation(libs.jdom2)
+    testImplementation(libs.mockito.kotlin)
+
+    // test fakes
+    testImplementation(projects.feature.account.fake)
+    testImplementation(projects.feature.notification.testing)
+}
+
+android {
+    namespace = "com.fsck.k9.core"
+
+    buildFeatures {
+        buildConfig = true
+    }
+
+    testOptions {
+        unitTests {
+            isIncludeAndroidResources = true
+        }
+    }
+}
+
+codeCoverage {
+    branchCoverage = 41
+    lineCoverage = 46
+}

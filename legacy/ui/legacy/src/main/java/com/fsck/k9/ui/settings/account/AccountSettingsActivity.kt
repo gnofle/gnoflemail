@@ -1,0 +1,154 @@
+package com.fsck.k9.ui.settings.account
+
+import android.content.Context
+import android.content.Intent
+import android.os.Bundle
+import android.view.MenuItem
+import android.view.View
+import android.widget.AdapterView
+import androidx.preference.PreferenceFragmentCompat
+import androidx.preference.PreferenceFragmentCompat.OnPreferenceStartScreenCallback
+import androidx.preference.PreferenceScreen
+import com.fsck.k9.ui.R
+import com.fsck.k9.ui.base.BaseActivity
+import com.fsck.k9.ui.base.extensions.fragmentTransaction
+import com.fsck.k9.ui.base.extensions.fragmentTransactionWithBackStack
+import com.fsck.k9.ui.base.livedata.observeNotNull
+import net.thunderbird.feature.account.AccountId
+import net.thunderbird.feature.account.AccountIdFactory
+import net.thunderbird.legacy.logging.Log
+import org.koin.androidx.viewmodel.ext.android.viewModel
+
+private const val TAG = "AccountSettingsActivity"
+
+class AccountSettingsActivity : BaseActivity(), OnPreferenceStartScreenCallback {
+    private val accountViewModel: AccountSettingsViewModel by viewModel()
+    private lateinit var accountId: AccountId
+    private var startScreenKey: String? = null
+    private var fragmentAdded = false
+
+    private lateinit var accountSpinner: AccountSelectionSpinner
+
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setLayout(R.layout.activity_account_settings)
+
+        accountSpinner = findViewById(R.id.accountSpinner)
+
+        initializeActionBar()
+
+        if (!decodeArguments()) {
+            Log.d(TAG, "Invalid arguments")
+            finish()
+            return
+        }
+
+        loadAccount()
+    }
+
+    private fun initializeActionBar() {
+        val actionBar = supportActionBar ?: throw RuntimeException("getSupportActionBar() == null")
+        actionBar.setDisplayHomeAsUpEnabled(true)
+        actionBar.setDisplayShowTitleEnabled(false)
+
+        accountSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>, view: View, position: Int, id: Long) {
+                onAccountSelected(selectedAccountUuid = accountSpinner.selection.id.toString())
+            }
+
+            override fun onNothingSelected(parent: AdapterView<*>) = Unit
+        }
+
+        accountViewModel.accounts.observeNotNull(this) { accounts ->
+            accountSpinner.setAccounts(accounts)
+        }
+    }
+
+    private fun onAccountSelected(selectedAccountUuid: String) {
+        if (selectedAccountUuid != accountId.toString() && !isFinishing) {
+            start(this, selectedAccountUuid)
+            finish()
+        }
+    }
+
+    private fun decodeArguments(): Boolean {
+        accountId = intent.getStringExtra(ARG_ACCOUNT_UUID)
+            ?.let { AccountIdFactory.of(it) } ?: return false
+        startScreenKey = intent.getStringExtra(ARG_START_SCREEN_KEY)
+        return true
+    }
+
+    private fun loadAccount() {
+        accountViewModel.getAccount(accountId).observe(this) { account ->
+            if (account == null) {
+                Log.w(TAG, "Account with ID %s not found", accountId)
+                finish()
+                return@observe
+            }
+
+            accountSpinner.selection = account
+            addAccountSettingsFragment()
+        }
+    }
+
+    private fun addAccountSettingsFragment() {
+        val needToAddFragment = supportFragmentManager.findFragmentById(R.id.accountSettingsContainer) == null
+        if (needToAddFragment && !fragmentAdded) {
+            fragmentAdded = true
+            fragmentTransaction {
+                add(
+                    R.id.accountSettingsContainer,
+                    AccountSettingsFragment.create(accountId.toString(), startScreenKey),
+                )
+            }
+        }
+    }
+
+    override fun onOptionsItemSelected(item: MenuItem): Boolean {
+        if (item.itemId == android.R.id.home) {
+            onBackPressedDispatcher.onBackPressed()
+            return true
+        }
+
+        return super.onOptionsItemSelected(item)
+    }
+
+    override fun onPreferenceStartScreen(
+        caller: PreferenceFragmentCompat,
+        preferenceScreen: PreferenceScreen,
+    ): Boolean {
+        fragmentTransactionWithBackStack {
+            replace(
+                R.id.accountSettingsContainer,
+                AccountSettingsFragment.create(accountId.toString(), preferenceScreen.key),
+            )
+        }
+
+        return true
+    }
+
+    override fun setTitle(title: CharSequence) {
+        super.setTitle(title)
+        accountSpinner.setTitle(title)
+    }
+
+    companion object {
+        private const val ARG_ACCOUNT_UUID = "accountUuid"
+        private const val ARG_START_SCREEN_KEY = "startScreen"
+
+        @JvmStatic
+        @JvmOverloads
+        fun start(context: Context, accountUuid: String, startScreenKey: String? = null) {
+            val intent = Intent(context, AccountSettingsActivity::class.java).apply {
+                putExtra(ARG_ACCOUNT_UUID, accountUuid)
+                startScreenKey?.let { putExtra(ARG_START_SCREEN_KEY, it) }
+            }
+            context.startActivity(intent)
+        }
+
+        @JvmStatic
+        fun startCryptoSettings(context: Context, accountUuid: String) {
+            start(context, accountUuid, AccountSettingsFragment.PREFERENCE_OPENPGP)
+        }
+    }
+}

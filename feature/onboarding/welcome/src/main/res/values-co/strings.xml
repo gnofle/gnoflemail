@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources xmlns:xliff="urn:oasis:names:tc:xliff:document:1.2">
+    <string name="onboarding_welcome_start_button">Principià</string>
+    <string name="onboarding_welcome_import_button">Impurtà i parametri</string>
+    <string name="onboarding_welcome_text">Un’appiecazione di messaghjeria elettronica per Android, à codice di fonte apertu, rispettosa di a vita privata è senza publicità.</string>
+</resources>

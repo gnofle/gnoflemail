@@ -1,0 +1,177 @@
+package com.fsck.k9.activity
+
+import android.os.Bundle
+import android.view.View
+import android.view.ViewGroup
+import android.widget.AdapterView
+import android.widget.AdapterView.OnItemClickListener
+import android.widget.ArrayAdapter
+import androidx.core.content.res.ResourcesCompat
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.lifecycleScope
+import androidx.lifecycle.repeatOnLifecycle
+import com.fsck.k9.CoreResourceProvider
+import com.fsck.k9.ui.R
+import com.google.android.material.textview.MaterialTextView
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import net.thunderbird.core.android.account.LegacyAccount
+import net.thunderbird.core.android.account.LegacyAccountManager
+import net.thunderbird.core.preference.GeneralSettingsManager
+import net.thunderbird.feature.search.legacy.SearchAccount
+import org.koin.android.ext.android.inject
+
+/**
+ * Activity displaying the list of accounts.
+ *
+ * Classes extending this abstract class have to provide an [.onAccountSelected]
+ * method to perform an action when an account is selected.
+ */
+abstract class AccountList : BaseListActivity(), OnItemClickListener {
+
+    private val coreResourceProvider: CoreResourceProvider by inject()
+
+    private val generalSettingsManager: GeneralSettingsManager by inject()
+
+    private val accountManager: LegacyAccountManager by inject()
+
+    public override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setResult(RESULT_CANCELED)
+        setLayout(R.layout.account_list)
+
+        listView.apply {
+            onItemClickListener = this@AccountList
+            itemsCanFocus = false
+        }
+
+        lifecycleScope.launch {
+            repeatOnLifecycle(Lifecycle.State.RESUMED) {
+                loadAccounts()
+            }
+        }
+    }
+
+    override fun onItemClick(parent: AdapterView<*>, view: View, position: Int, id: Long) {
+        val account = parent.getItemAtPosition(position) ?: return
+        onAccountSelected(account)
+    }
+
+    /**
+     * Load accounts in a background thread and populate the list view with the results on main thread.
+     */
+    private suspend fun loadAccounts() {
+        val accounts = withContext(Dispatchers.IO) {
+            accountManager.findAll()
+        }
+
+        populateListView(accounts)
+    }
+
+    /**
+     * Create a new [AccountsAdapter] instance and assign it to the [android.widget.ListView].
+     *
+     * @param realAccounts
+     * An array of accounts to display.
+     */
+    private fun populateListView(realAccounts: List<LegacyAccount>) {
+        val accounts: MutableList<Any> = ArrayList()
+
+        if (generalSettingsManager.getConfig().display.inboxSettings.isShowUnifiedInbox) {
+            val unifiedInboxAccount = SearchAccount.createUnifiedInboxSearch(
+                title = coreResourceProvider.searchUnifiedFoldersTitle(),
+                detail = coreResourceProvider.searchUnifiedFoldersDetail(),
+            )
+            accounts.add(unifiedInboxAccount)
+        }
+
+        accounts.addAll(realAccounts)
+
+        listView.apply {
+            adapter = AccountsAdapter(accounts)
+            invalidate()
+        }
+    }
+
+    /**
+     * This method will be called when an account was selected.
+     *
+     * @param account
+     * The account the user selected.
+     */
+    protected abstract fun onAccountSelected(account: Any)
+
+    internal inner class AccountsAdapter(accounts: List<Any?>) : ArrayAdapter<Any?>(
+        this@AccountList,
+        0,
+        accounts,
+    ) {
+        override fun getView(position: Int, convertView: View?, parent: ViewGroup): View {
+            val account = getItem(position)
+            val view = convertView ?: layoutInflater.inflate(R.layout.accounts_item, parent, false)
+
+            val holder = (view.tag as? AccountViewHolder) ?: AccountViewHolder(view).apply {
+                view.tag = this
+            }
+
+            if (account is SearchAccount) {
+                bindSearchAccount(account, holder)
+            } else if (account is LegacyAccount) {
+                bindAccount(account, holder)
+            } else {
+                error("Unknown account type: $account")
+            }
+
+            if (account is LegacyAccount) {
+                holder.chip.setBackgroundColor(account.profile.color)
+            } else {
+                holder.chip.setBackgroundColor(
+                    ResourcesCompat.getColor(
+                        resources,
+                        R.color.account_list_item_chip_background,
+                        null,
+                    ),
+                )
+            }
+
+            holder.chip.background.alpha = BACKGROUND_ALPHA
+
+            return view
+        }
+
+        private fun bindSearchAccount(account: SearchAccount, holder: AccountViewHolder) {
+            val accountName = account.name
+            if (accountName.isNotEmpty()) {
+                holder.description.text = accountName
+                holder.email.text = account.email
+                holder.email.visibility = View.VISIBLE
+            } else {
+                holder.description.text = account.email
+                holder.email.visibility = View.GONE
+            }
+        }
+
+        private fun bindAccount(account: LegacyAccount, holder: AccountViewHolder) {
+            val accountName = account.name
+            if (!accountName.isNullOrEmpty()) {
+                holder.description.text = accountName
+                holder.email.text = account.email
+                holder.email.visibility = View.VISIBLE
+            } else {
+                holder.description.text = account.email
+                holder.email.visibility = View.GONE
+            }
+        }
+
+        internal inner class AccountViewHolder(view: View) {
+            var description: MaterialTextView = view.findViewById(R.id.description)
+            var email: MaterialTextView = view.findViewById(R.id.email)
+            var chip: View = view.findViewById(R.id.chip)
+        }
+    }
+
+    private companion object {
+        const val BACKGROUND_ALPHA = 255
+    }
+}

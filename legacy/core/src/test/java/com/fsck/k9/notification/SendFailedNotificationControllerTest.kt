@@ -1,0 +1,174 @@
+package com.fsck.k9.notification
+
+import android.app.Notification
+import android.app.PendingIntent
+import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
+import androidx.test.core.app.ApplicationProvider
+import com.fsck.k9.FakeLegacyAccount
+import kotlin.time.Clock
+import kotlin.time.ExperimentalTime
+import net.thunderbird.core.android.account.LegacyAccountManager
+import net.thunderbird.core.android.testing.MockHelper.mockBuilder
+import net.thunderbird.core.android.testing.RobolectricTest
+import net.thunderbird.core.preference.GeneralSettings
+import net.thunderbird.core.preference.display.DisplaySettings
+import net.thunderbird.core.preference.network.NetworkSettings
+import net.thunderbird.core.preference.notification.NotificationPreference
+import net.thunderbird.core.preference.privacy.PrivacySettings
+import net.thunderbird.core.testing.TestClock
+import net.thunderbird.feature.account.AccountIdFactory
+import net.thunderbird.feature.account.storage.profile.AvatarDto
+import net.thunderbird.feature.account.storage.profile.AvatarTypeDto
+import net.thunderbird.feature.account.storage.profile.ProfileDto
+import net.thunderbird.feature.notification.api.NotificationId
+import org.junit.After
+import org.junit.Before
+import org.junit.Test
+import org.koin.core.context.GlobalContext.startKoin
+import org.koin.core.context.GlobalContext.stopKoin
+import org.koin.dsl.module
+import org.mockito.Mockito.verify
+import org.mockito.kotlin.any
+import org.mockito.kotlin.doReturn
+import org.mockito.kotlin.eq
+import org.mockito.kotlin.mock
+import org.mockito.kotlin.never
+
+private const val ACCOUNT_NUMBER = 1
+private const val ACCOUNT_NAME = "TestAccount"
+private const val NOTIFICATION_ID = 101
+
+class SendFailedNotificationControllerTest : RobolectricTest() {
+    private val resourceProvider: NotificationResourceProvider = TestNotificationResourceProvider()
+    private val notification = mock<Notification>()
+    private val lockScreenNotification = mock<Notification>()
+    private val notificationManager = mock<NotificationManagerCompat>()
+    private val builder = createFakeNotificationBuilder(notification)
+    private val lockScreenNotificationBuilder = createFakeNotificationBuilder(lockScreenNotification)
+    private val accountId = AccountIdFactory.create()
+    private val notificationHelper = createFakeNotificationHelper(
+        notificationManager,
+        builder,
+        lockScreenNotificationBuilder,
+    )
+    private val account = FakeLegacyAccount.ACCOUNT.copy(
+        id = accountId,
+        accountNumber = ACCOUNT_NUMBER,
+        profile = ProfileDto(
+            id = accountId,
+            name = ACCOUNT_NAME,
+            color = -1,
+            avatar = AvatarDto(
+                accountId = accountId,
+                avatarType = AvatarTypeDto.MONOGRAM,
+                avatarMonogram = "TA",
+                avatarImageUri = null,
+                avatarIconName = null,
+            ),
+        ),
+    )
+    private val accountManager = mock<LegacyAccountManager> {
+        on { findById(accountId) } doReturn account
+    }
+    private val notificationIdRegistry = mock<AccountNotificationIdRegistry> {
+        on { getOrAllocate(accountId, AccountNotificationKind.SendFailed) } doReturn NotificationId(NOTIFICATION_ID)
+    }
+    private val contentIntent = mock<PendingIntent>()
+    private val controller = SendFailedNotificationController(
+        notificationHelper = notificationHelper,
+        actionBuilder = createActionBuilder(contentIntent),
+        resourceProvider = resourceProvider,
+        generalSettingsManager = mock {
+            on { getSettings() } doReturn GeneralSettings(
+                display = DisplaySettings(),
+                network = NetworkSettings(),
+                notification = NotificationPreference(),
+                privacy = PrivacySettings(),
+                platformConfigProvider = FakePlatformConfigProvider(),
+            )
+        },
+        outboxFolderManager = mock {
+            on { getOutboxFolderIdSync(accountId) } doReturn -1L
+        },
+        accountManager = accountManager,
+        notificationIdRegistry = notificationIdRegistry,
+    )
+
+    @OptIn(ExperimentalTime::class)
+    @Before
+    fun setUp() {
+        startKoin {
+            modules(
+                module {
+                    single<Clock> { TestClock() }
+                },
+            )
+        }
+    }
+
+    @After
+    fun tearDown() {
+        stopKoin()
+    }
+
+    @Test
+    fun testShowSendFailedNotification() {
+        val exception = Exception()
+
+        controller.showSendFailedNotification(accountId, exception)
+
+        verify(notificationHelper).notify(NOTIFICATION_ID, notification)
+        verify(builder).setSmallIcon(resourceProvider.iconWarning)
+        verify(builder).setTicker("Failed to send some messages")
+        verify(builder).setContentTitle("Failed to send some messages")
+        verify(builder).setContentText("Exception")
+        verify(builder).setContentIntent(contentIntent)
+        verify(builder).setPublicVersion(lockScreenNotification)
+        verify(lockScreenNotificationBuilder).setContentTitle("Failed to send some messages")
+        verify(lockScreenNotificationBuilder, never()).setContentText(any())
+        verify(lockScreenNotificationBuilder, never()).setTicker(any())
+    }
+
+    @Test
+    fun `showSendFailedNotification should do nothing for a removed account`() {
+        controller.showSendFailedNotification(AccountIdFactory.create(), Exception())
+
+        verify(notificationHelper, never()).notify(any<Int>(), any<Notification>())
+    }
+
+    @Test
+    fun testClearSendFailedNotification() {
+        controller.clearSendFailedNotification(accountId)
+
+        verify(notificationManager).cancel(NOTIFICATION_ID)
+    }
+
+    private fun createFakeNotificationBuilder(notification: Notification): NotificationCompat.Builder {
+        return mockBuilder {
+            on { build() } doReturn notification
+        }
+    }
+
+    private fun createFakeNotificationHelper(
+        notificationManager: NotificationManagerCompat,
+        notificationBuilder: NotificationCompat.Builder,
+        lockScreenNotificationBuilder: NotificationCompat.Builder,
+    ): NotificationHelper {
+        return mock {
+            on { getContext() } doReturn ApplicationProvider.getApplicationContext()
+            on { getNotificationManager() } doReturn notificationManager
+            on { createNotificationBuilder(any(), any(), any()) }.doReturn(
+                notificationBuilder,
+                lockScreenNotificationBuilder,
+            )
+        }
+    }
+
+    private fun createActionBuilder(contentIntent: PendingIntent): NotificationActionCreator {
+        return mock {
+            on { createViewFolderListPendingIntent(accountId) } doReturn contentIntent
+            on { createViewFolderPendingIntent(eq(accountId), any()) } doReturn contentIntent
+        }
+    }
+}

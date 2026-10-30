@@ -1,0 +1,578 @@
+package com.fsck.k9.notification
+
+import app.k9mail.legacy.message.controller.MessageReference
+import assertk.assertThat
+import assertk.assertions.containsExactlyInAnyOrder
+import assertk.assertions.doesNotContain
+import assertk.assertions.hasSize
+import assertk.assertions.isEmpty
+import assertk.assertions.isEqualTo
+import assertk.assertions.isFalse
+import assertk.assertions.isInstanceOf
+import assertk.assertions.isNotNull
+import assertk.assertions.isNull
+import assertk.assertions.isTrue
+import com.fsck.k9.FakeLegacyAccount
+import com.fsck.k9.mail.Address
+import com.fsck.k9.mailstore.LocalMessage
+import com.fsck.k9.mailstore.NotificationMessage
+import kotlin.test.assertNotNull
+import kotlin.time.Clock
+import kotlin.time.ExperimentalTime
+import kotlin.time.Instant
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.flow
+import net.thunderbird.core.android.account.LegacyAccount
+import net.thunderbird.core.android.account.LegacyAccountManager
+import net.thunderbird.core.common.appConfig.PlatformConfigProvider
+import net.thunderbird.core.preference.GeneralSettings
+import net.thunderbird.core.preference.GeneralSettingsManager
+import net.thunderbird.core.preference.display.DisplaySettings
+import net.thunderbird.core.preference.interaction.InteractionSettings
+import net.thunderbird.core.preference.network.NetworkSettings
+import net.thunderbird.core.preference.notification.NotificationPreference
+import net.thunderbird.core.preference.privacy.PrivacySettings
+import net.thunderbird.core.testing.TestClock
+import net.thunderbird.feature.account.AccountIdFactory
+import net.thunderbird.feature.account.storage.profile.AvatarDto
+import net.thunderbird.feature.account.storage.profile.AvatarTypeDto
+import net.thunderbird.feature.account.storage.profile.ProfileDto
+import org.junit.After
+import org.junit.Before
+import org.junit.Test
+import org.koin.core.context.GlobalContext.startKoin
+import org.koin.core.context.GlobalContext.stopKoin
+import org.koin.dsl.module
+import org.mockito.kotlin.any
+import org.mockito.kotlin.doReturn
+import org.mockito.kotlin.eq
+import org.mockito.kotlin.mock
+import org.mockito.kotlin.stubbing
+
+private const val ACCOUNT_NAME = "Personal"
+private const val ACCOUNT_COLOR = 0xFF112233L.toInt()
+private const val FOLDER_ID = 42L
+private const val TIMESTAMP = 23L
+
+@OptIn(ExperimentalTime::class)
+class NewMailNotificationManagerTest {
+    private val accountId = AccountIdFactory.create()
+    private val notificationMessageProvider = FakeNotificationMessageProvider()
+    private val account = createAccount()
+    private val accountManager = mock<LegacyAccountManager> {
+        on { findById(accountId) } doReturn account
+    }
+    private val notificationIdRegistry = DefaultAccountNotificationIdRegistry(accountManager)
+    private val notificationDataStore = NotificationDataStore(accountManager, notificationIdRegistry)
+    private val notificationContentCreator = mock<NotificationContentCreator>()
+    private val generalSettingsManager = FakeGeneralSettingManager()
+    private val clock = TestClock(Instant.fromEpochMilliseconds(TIMESTAMP))
+    private val generalSettings = GeneralSettings(
+        display = DisplaySettings(),
+        network = NetworkSettings(),
+        notification = NotificationPreference(
+            quietTimeStarts = "23:00",
+            quietTimeEnds = "00:00",
+        ),
+        privacy = PrivacySettings(),
+        platformConfigProvider = FakePlatformConfigProvider(),
+    )
+
+    private val singleMessageNotificationDataCreator = SingleMessageNotificationDataCreator(
+        interactionPreferences = mock {
+            on { getConfig() } doReturn InteractionSettings()
+        },
+        notificationPreference = mock { on { getConfig() } doReturn generalSettings.notification },
+        accountManager = accountManager,
+        notificationIdRegistry = notificationIdRegistry,
+    )
+
+    private val summaryNotificationDataCreator = SummaryNotificationDataCreator(
+        singleMessageNotificationDataCreator = singleMessageNotificationDataCreator,
+        generalSettingsManager = mock {
+            on { getConfig() } doReturn generalSettings
+        },
+    )
+
+    private val manager = NewMailNotificationManager(
+        contentCreator = notificationContentCreator,
+        notificationRepository = createNotificationRepository(),
+        baseNotificationDataCreator = BaseNotificationDataCreator(),
+        singleMessageNotificationDataCreator = singleMessageNotificationDataCreator,
+        summaryNotificationDataCreator = summaryNotificationDataCreator,
+        accountManager = accountManager,
+        notificationIdRegistry = notificationIdRegistry,
+        clock = clock,
+    )
+
+    @Before
+    fun setUp() {
+        startKoin {
+            modules(
+                module {
+                    single<Clock> { TestClock() }
+                },
+            )
+        }
+    }
+
+    @After
+    fun tearDown() {
+        stopKoin()
+    }
+
+    @Test
+    fun `add first notification`() {
+        val message = addMessageToNotificationContentCreator(
+            sender = "sender",
+            subject = "subject",
+            preview = "preview",
+            summary = "summary",
+            messageUid = "msg-1",
+        )
+
+        val result = manager.addNewMailNotification(accountId, message, silent = false)
+
+        assertNotNull(result)
+        assertThat(result.singleNotificationData.first().content).isEqualTo(
+            NotificationContent(
+                messageReference = createMessageReference("msg-1"),
+                sender = Address("irrelevant", "sender"),
+                subject = "subject",
+                preview = "preview",
+                summary = "summary",
+            ),
+        )
+        assertThat(result.summaryNotificationData).isNotNull().isInstanceOf<SummarySingleNotificationData>()
+        val summaryNotificationData = result.summaryNotificationData as SummarySingleNotificationData
+        assertThat(summaryNotificationData.singleNotificationData.isSilent).isFalse()
+    }
+
+    @Test
+    fun `add second notification`() {
+        val messageOne = addMessageToNotificationContentCreator(
+            sender = "Alice",
+            subject = "Hi Bob",
+            preview = "How are you?",
+            summary = "Alice Hi Bob",
+            messageUid = "msg-1",
+        )
+        val messageTwo = addMessageToNotificationContentCreator(
+            sender = "Zoe",
+            subject = "Meeting",
+            preview = "We need to talk",
+            summary = "Zoe Meeting",
+            messageUid = "msg-2",
+        )
+        manager.addNewMailNotification(accountId, messageOne, silent = false)
+        val timestamp = TIMESTAMP + 1000
+        clock.changeTimeTo(Instant.fromEpochMilliseconds(timestamp))
+
+        val result = manager.addNewMailNotification(accountId, messageTwo, silent = false)
+
+        assertNotNull(result)
+        assertThat(result.singleNotificationData.first().content).isEqualTo(
+            NotificationContent(
+                messageReference = createMessageReference("msg-2"),
+                sender = Address("irrelevant", "Zoe"),
+                subject = "Meeting",
+                preview = "We need to talk",
+                summary = "Zoe Meeting",
+            ),
+        )
+        assertThat(result.baseNotificationData.newMessagesCount).isEqualTo(2)
+        assertThat(result.summaryNotificationData).isNotNull().isInstanceOf<SummaryInboxNotificationData>()
+        val summaryNotificationData = result.summaryNotificationData as SummaryInboxNotificationData
+        assertThat(summaryNotificationData.content).isEqualTo(listOf("Zoe Meeting", "Alice Hi Bob"))
+        assertThat(summaryNotificationData.messageReferences).isEqualTo(
+            listOf(
+                createMessageReference("msg-2"),
+                createMessageReference("msg-1"),
+            ),
+        )
+        assertThat(summaryNotificationData.additionalMessagesCount).isEqualTo(0)
+        assertThat(summaryNotificationData.isSilent).isFalse()
+    }
+
+    @Test
+    fun `add one more notification when already displaying the maximum number of notifications`() {
+        addMaximumNumberOfNotifications()
+        val message = addMessageToNotificationContentCreator(
+            sender = "Alice",
+            subject = "Another one",
+            preview = "Are you tired of me yet?",
+            summary = "Alice Another one",
+            messageUid = "msg-x",
+        )
+
+        val result = manager.addNewMailNotification(accountId, message, silent = false)
+
+        assertNotNull(result)
+        val notificationId = NotificationIds.getSingleMessageNotificationId(account.accountNumber, index = 0)
+        assertThat(result.cancelNotificationIds).isEqualTo(listOf(notificationId))
+        assertThat(result.singleNotificationData.first().notificationId).isEqualTo(notificationId)
+    }
+
+    @Test
+    fun `remove notification when none was added before should return null`() {
+        val result = manager.removeNewMailNotifications(accountId, clearNewMessageState = true) {
+            listOf(createMessageReference("any"))
+        }
+
+        assertThat(result).isNull()
+    }
+
+    @Test
+    fun `remove notification with untracked notification ID should return null`() {
+        val message = addMessageToNotificationContentCreator(
+            sender = "Alice",
+            subject = "Another one",
+            preview = "Are you tired of me yet?",
+            summary = "Alice Another one",
+            messageUid = "msg-x",
+        )
+        manager.addNewMailNotification(accountId, message, silent = false)
+
+        val result = manager.removeNewMailNotifications(accountId, clearNewMessageState = true) {
+            listOf(createMessageReference("untracked"))
+        }
+
+        assertThat(result).isNull()
+    }
+
+    @Test
+    fun `remove last remaining notification`() {
+        val message = addMessageToNotificationContentCreator(
+            sender = "Alice",
+            subject = "Hello",
+            preview = "How are you?",
+            summary = "Alice Hello",
+            messageUid = "msg-1",
+        )
+        manager.addNewMailNotification(accountId, message, silent = false)
+
+        val result = manager.removeNewMailNotifications(accountId, clearNewMessageState = true) {
+            listOf(createMessageReference("msg-1"))
+        }
+
+        assertNotNull(result) { data ->
+            assertThat(data.cancelNotificationIds).containsExactlyInAnyOrder(
+                NotificationIds.getNewMailSummaryNotificationId(account.accountNumber),
+                NotificationIds.getSingleMessageNotificationId(account.accountNumber, 0),
+            )
+            assertThat(data.singleNotificationData).isEmpty()
+            assertThat(data.summaryNotificationData).isNull()
+        }
+    }
+
+    @Test
+    fun `remove one of three notifications`() {
+        val messageOne = addMessageToNotificationContentCreator(
+            sender = "Alice",
+            subject = "One",
+            preview = "preview",
+            summary = "Alice One",
+            messageUid = "msg-1",
+        )
+        manager.addNewMailNotification(accountId, messageOne, silent = false)
+        val messageTwo = addMessageToNotificationContentCreator(
+            sender = "Alice",
+            subject = "Two",
+            preview = "preview",
+            summary = "Alice Two",
+            messageUid = "msg-2",
+        )
+        val dataTwo = manager.addNewMailNotification(accountId, messageTwo, silent = true)
+        assertNotNull(dataTwo)
+        val notificationIdTwo = dataTwo.singleNotificationData.first().notificationId
+        val messageThree = addMessageToNotificationContentCreator(
+            sender = "Alice",
+            subject = "Three",
+            preview = "preview",
+            summary = "Alice Three",
+            messageUid = "msg-3",
+        )
+        manager.addNewMailNotification(accountId, messageThree, silent = true)
+
+        val result = manager.removeNewMailNotifications(accountId, clearNewMessageState = true) {
+            listOf(createMessageReference("msg-2"))
+        }
+
+        assertNotNull(result) { data ->
+            assertThat(data.cancelNotificationIds).isEqualTo(listOf(notificationIdTwo))
+            assertThat(data.singleNotificationData).isEmpty()
+            assertThat(data.baseNotificationData.newMessagesCount).isEqualTo(2)
+            assertThat(data.summaryNotificationData).isNotNull().isInstanceOf<SummaryInboxNotificationData>()
+            val summaryNotificationData = data.summaryNotificationData as SummaryInboxNotificationData
+            assertThat(summaryNotificationData.content).isEqualTo(listOf("Alice Three", "Alice One"))
+            assertThat(summaryNotificationData.messageReferences).isEqualTo(
+                listOf(
+                    createMessageReference("msg-3"),
+                    createMessageReference("msg-1"),
+                ),
+            )
+        }
+    }
+
+    @Test
+    fun `remove notification when additional notifications are available`() {
+        val message = addMessageToNotificationContentCreator(
+            sender = "Alice",
+            subject = "Another one",
+            preview = "Are you tired of me yet?",
+            summary = "Alice Another one",
+            messageUid = "msg-restore",
+        )
+        manager.addNewMailNotification(accountId, message, silent = false)
+        addMaximumNumberOfNotifications()
+
+        val result = manager.removeNewMailNotifications(accountId, clearNewMessageState = true) {
+            listOf(createMessageReference("msg-1"))
+        }
+
+        assertNotNull(result) { data ->
+            assertThat(data.cancelNotificationIds).hasSize(1)
+            assertThat(data.baseNotificationData.newMessagesCount)
+                .isEqualTo(MAX_NUMBER_OF_NEW_MESSAGE_NOTIFICATIONS)
+
+            val singleNotificationData = data.singleNotificationData.first()
+            assertThat(singleNotificationData.notificationId).isEqualTo(data.cancelNotificationIds.first())
+            assertThat(singleNotificationData.isSilent).isTrue()
+            assertThat(singleNotificationData.content).isEqualTo(
+                NotificationContent(
+                    messageReference = createMessageReference("msg-restore"),
+                    sender = Address("irrelevant", "Alice"),
+                    subject = "Another one",
+                    preview = "Are you tired of me yet?",
+                    summary = "Alice Another one",
+                ),
+            )
+        }
+    }
+
+    @Test
+    fun `restore notifications without persisted notifications`() {
+        val result = manager.restoreNewMailNotifications(accountId)
+
+        assertThat(result).isNull()
+    }
+
+    @Test
+    fun `restore notifications with single persisted notification`() {
+        addNotificationMessage(
+            notificationId = 10,
+            timestamp = 20L,
+            sender = "Sender",
+            subject = "Subject",
+            summary = "Summary",
+            preview = "Preview",
+            messageUid = "uid-1",
+        )
+
+        val result = manager.restoreNewMailNotifications(accountId)
+
+        assertNotNull(result) { data ->
+            assertThat(data.cancelNotificationIds).isEmpty()
+            assertThat(data.baseNotificationData.newMessagesCount).isEqualTo(1)
+            assertThat(data.singleNotificationData).hasSize(1)
+
+            val singleNotificationData = data.singleNotificationData.first()
+            assertThat(singleNotificationData.notificationId).isEqualTo(10)
+            assertThat(singleNotificationData.isSilent).isTrue()
+            assertThat(singleNotificationData.addLockScreenNotification).isTrue()
+            assertThat(singleNotificationData.content).isEqualTo(
+                NotificationContent(
+                    messageReference = createMessageReference("uid-1"),
+                    sender = Address("irrelevant", "Sender"),
+                    subject = "Subject",
+                    preview = "Preview",
+                    summary = "Summary",
+                ),
+            )
+
+            assertThat(data.summaryNotificationData).isNotNull().isInstanceOf<SummarySingleNotificationData>()
+            val summaryNotificationData = data.summaryNotificationData as SummarySingleNotificationData
+            assertThat(summaryNotificationData.singleNotificationData.isSilent).isTrue()
+            assertThat(summaryNotificationData.singleNotificationData.content).isEqualTo(
+                NotificationContent(
+                    messageReference = createMessageReference("uid-1"),
+                    sender = Address("irrelevant", "Sender"),
+                    subject = "Subject",
+                    preview = "Preview",
+                    summary = "Summary",
+                ),
+            )
+        }
+    }
+
+    @Test
+    fun `restore notifications with one inactive persisted notification`() {
+        addMaximumNumberOfNotificationMessages()
+        addNotificationMessage(
+            notificationId = null,
+            timestamp = 1000L,
+            sender = "inactive",
+            subject = "inactive",
+            summary = "inactive",
+            preview = "inactive",
+            messageUid = "uid-inactive",
+        )
+
+        val result = manager.restoreNewMailNotifications(accountId)
+
+        assertNotNull(result) { data ->
+            assertThat(data.cancelNotificationIds).isEmpty()
+            assertThat(data.baseNotificationData.newMessagesCount)
+                .isEqualTo(MAX_NUMBER_OF_NEW_MESSAGE_NOTIFICATIONS + 1)
+            assertThat(data.singleNotificationData).hasSize(MAX_NUMBER_OF_NEW_MESSAGE_NOTIFICATIONS)
+            assertThat(data.singleNotificationData.map { it.content.sender }).doesNotContain("inactive")
+
+            assertThat(data.summaryNotificationData).isNotNull().isInstanceOf<SummaryInboxNotificationData>()
+            val summaryNotificationData = data.summaryNotificationData as SummaryInboxNotificationData
+            assertThat(summaryNotificationData.isSilent).isTrue()
+        }
+    }
+
+    private fun createAccount(): LegacyAccount {
+        return FakeLegacyAccount.ACCOUNT.copy(
+            id = accountId,
+            name = ACCOUNT_NAME,
+            profile = ProfileDto(
+                id = accountId,
+                name = ACCOUNT_NAME,
+                color = ACCOUNT_COLOR,
+                avatar = AvatarDto(
+                    accountId = accountId,
+                    avatarType = AvatarTypeDto.MONOGRAM,
+                    avatarMonogram = "PE",
+                    avatarImageUri = null,
+                    avatarIconName = null,
+                ),
+            ),
+        )
+    }
+
+    private fun addMaximumNumberOfNotifications() {
+        repeat(MAX_NUMBER_OF_NEW_MESSAGE_NOTIFICATIONS) { index ->
+            val message = addMessageToNotificationContentCreator(
+                sender = "sender",
+                subject = "subject",
+                preview = "preview",
+                summary = "summary",
+                messageUid = "msg-$index",
+            )
+            manager.addNewMailNotification(accountId, message, silent = true)
+        }
+    }
+
+    private fun addMessageToNotificationContentCreator(
+        sender: String,
+        subject: String,
+        preview: String,
+        summary: String,
+        messageUid: String,
+    ): LocalMessage {
+        val message = mock<LocalMessage>()
+
+        stubbing(notificationContentCreator) {
+            on { createFromMessage(eq(message), any()) } doReturn
+                NotificationContent(
+                    messageReference = createMessageReference(messageUid),
+                    sender = Address("irrelevant", sender),
+                    subject,
+                    preview,
+                    summary,
+                )
+        }
+
+        return message
+    }
+
+    private fun addNotificationMessage(
+        notificationId: Int?,
+        timestamp: Long,
+        sender: String,
+        subject: String,
+        preview: String,
+        summary: String,
+        messageUid: String,
+    ) {
+        val message = mock<LocalMessage>()
+
+        val notificationMessage = NotificationMessage(message, notificationId, timestamp)
+        notificationMessageProvider.add(accountId, notificationMessage)
+
+        stubbing(notificationContentCreator) {
+            on { createFromMessage(any(), any()) } doReturn
+                NotificationContent(
+                    messageReference = createMessageReference(messageUid),
+                    sender = Address("irrelevant", sender),
+                    subject,
+                    preview,
+                    summary,
+                )
+        }
+    }
+
+    private fun addMaximumNumberOfNotificationMessages() {
+        repeat(MAX_NUMBER_OF_NEW_MESSAGE_NOTIFICATIONS) { index ->
+            addNotificationMessage(
+                notificationId = index,
+                timestamp = index.toLong(),
+                sender = "irrelevant",
+                subject = "irrelevant",
+                preview = "irrelevant",
+                summary = "irrelevant",
+                messageUid = "uid-$index",
+            )
+        }
+    }
+
+    private fun createMessageReference(messageUid: String): MessageReference {
+        return MessageReference(accountId, FOLDER_ID, messageUid)
+    }
+
+    private fun createNotificationRepository(): NotificationRepository {
+        return NotificationRepository(
+            notificationStoreProvider = FakeNotificationStoreProvider(),
+            notificationMessageProvider = notificationMessageProvider,
+            newMessageStateStore = FakeNewMessageStateStore(),
+            notificationContentCreator = notificationContentCreator,
+            generalSettingsManager = generalSettingsManager,
+            notificationDataStore = notificationDataStore,
+            accountManager = accountManager,
+        )
+    }
+
+    private class FakeGeneralSettingManager : GeneralSettingsManager {
+        private val platformConfigProvider = object : PlatformConfigProvider {
+            override val isDebug: Boolean = true
+        }
+
+        private var generalSettings = GeneralSettings(platformConfigProvider = platformConfigProvider)
+
+        @Deprecated(
+            "Use PreferenceManager<GeneralSettings>.getConfig() instead",
+            replaceWith = ReplaceWith("getConfig()"),
+        )
+        override fun getSettings() = generalSettings
+
+        @Deprecated(
+            "Use PreferenceManager<GeneralSettings>.getConfigFlow() instead",
+            replaceWith = ReplaceWith("getConfigFlow()"),
+        )
+        override fun getSettingsFlow(): Flow<GeneralSettings> = flow {
+            emit(generalSettings)
+        }
+
+        override fun save(config: GeneralSettings) {
+            generalSettings = config
+        }
+
+        override fun getConfig(): GeneralSettings = generalSettings
+
+        override fun getConfigFlow(): Flow<GeneralSettings> = flow {
+            emit(generalSettings)
+        }
+    }
+}

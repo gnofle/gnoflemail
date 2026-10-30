@@ -1,0 +1,126 @@
+package net.thunderbird.feature.navigation.drawer.dropdown.domain.usecase
+
+import app.k9mail.legacy.mailstore.MessageListChangedListener
+import app.k9mail.legacy.mailstore.MessageListRepository
+import app.k9mail.legacy.message.controller.MessageCounts
+import app.k9mail.legacy.message.controller.MessageCountsProvider
+import kotlin.collections.toList
+import kotlin.coroutines.CoroutineContext
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.ExperimentalCoroutinesApi
+import kotlinx.coroutines.channels.awaitClose
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.callbackFlow
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.flatMapLatest
+import kotlinx.coroutines.flow.flowOf
+import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.launch
+import net.thunderbird.core.android.account.LegacyAccount
+import net.thunderbird.core.android.account.LegacyAccountManager
+import net.thunderbird.core.featureflag.FeatureFlagProvider
+import net.thunderbird.core.featureflag.keys.GeneratedFeatureFlagKey
+import net.thunderbird.feature.account.AccountId
+import net.thunderbird.feature.account.storage.mapper.AvatarDataMapper
+import net.thunderbird.feature.navigation.drawer.dropdown.domain.DomainContract.UseCase
+import net.thunderbird.feature.navigation.drawer.dropdown.domain.entity.DisplayAccount
+import net.thunderbird.feature.navigation.drawer.dropdown.domain.entity.MailDisplayAccount
+import net.thunderbird.feature.navigation.drawer.dropdown.domain.entity.UnifiedDisplayAccount
+import net.thunderbird.feature.notification.api.content.AuthenticationErrorNotification
+import net.thunderbird.feature.notification.api.receiver.InAppNotificationStream
+
+internal class GetDisplayAccounts(
+    private val accountManager: LegacyAccountManager,
+    private val messageCountsProvider: MessageCountsProvider,
+    private val messageListRepository: MessageListRepository,
+    private val notificationStream: InAppNotificationStream,
+    private val featureFlagProvider: FeatureFlagProvider,
+    private val avatarMapper: AvatarDataMapper,
+    private val coroutineContext: CoroutineContext = Dispatchers.IO,
+) : UseCase.GetDisplayAccounts {
+
+    @OptIn(ExperimentalCoroutinesApi::class)
+    override fun invoke(showUnifiedAccount: Boolean): Flow<List<DisplayAccount>> {
+        return accountManager
+            .observeAll()
+            .flatMapLatest { accounts -> accounts.associateWithAuthErrorIndication() }
+            .flatMapLatest { accountsMap ->
+                val accounts = accountsMap.keys.toList()
+                val messageCountsFlows: List<Flow<MessageCounts>> = accounts.map { account ->
+                    getMessageCountsFlow(account.id)
+                }
+
+                combine(messageCountsFlows) { messageCountsList ->
+                    val displayAccounts = messageCountsList.mapIndexed { index, messageCounts ->
+                        val account = accounts[index]
+                        MailDisplayAccount(
+                            id = account.id,
+                            name = account.profile.name,
+                            email = account.email,
+                            color = account.profile.color,
+                            avatar = avatarMapper.toDomain(account.profile.avatar),
+                            unreadMessageCount = messageCounts.unread,
+                            starredMessageCount = messageCounts.starred,
+                            hasError = accountsMap[account] == true,
+                            hasAutoExpandFolder = account.autoExpandFolderId != null,
+                        )
+                    }
+
+                    if (showUnifiedAccount) {
+                        withUnifiedAccount(displayAccounts)
+                    } else {
+                        displayAccounts
+                    }
+                }
+            }
+    }
+
+    private fun List<LegacyAccount>.associateWithAuthErrorIndication(): Flow<Map<LegacyAccount, Boolean>> {
+        return if (
+            featureFlagProvider.provide(GeneratedFeatureFlagKey.DISPLAY_IN_APP_NOTIFICATIONS)
+                .isDisabledOrUnavailable()
+        ) {
+            flowOf(associateWith { false })
+        } else {
+            val ids = map { it.id }
+            notificationStream
+                .notifications
+                .map { notifications ->
+                    notifications
+                        .filter { it is AuthenticationErrorNotification && it.accountId in ids }
+                        .associateBy { it.accountId }
+                }
+                .map { notifications ->
+                    associateWith { account -> notifications[account.id] != null }
+                }
+        }
+    }
+
+    private fun withUnifiedAccount(accounts: List<DisplayAccount>): List<DisplayAccount> {
+        val unified = UnifiedDisplayAccount(
+            unreadMessageCount = accounts.sumOf { it.unreadMessageCount },
+            starredMessageCount = accounts.sumOf { it.starredMessageCount },
+            hasError = accounts.any { it.hasError },
+        )
+
+        return listOf(unified) + accounts
+    }
+
+    private fun getMessageCountsFlow(accountId: AccountId): Flow<MessageCounts> {
+        return callbackFlow {
+            send(messageCountsProvider.getMessageCounts(accountId))
+
+            val listener = MessageListChangedListener {
+                launch {
+                    send(messageCountsProvider.getMessageCounts(accountId))
+                }
+            }
+            messageListRepository.addListener(accountId, listener)
+
+            awaitClose {
+                messageListRepository.removeListener(listener)
+            }
+        }.flowOn(coroutineContext)
+    }
+}

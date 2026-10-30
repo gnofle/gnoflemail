@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources xmlns:xliff="urn:oasis:names:tc:xliff:document:1.2">
+    <string name="onboarding_welcome_start_button">はじめる</string>
+    <string name="onboarding_welcome_import_button">K-9 の設定をインポート</string>
+    <string name="onboarding_welcome_text">オープンソース、プライバシー重視、広告なしの Android 版メールアプリ。</string>
+</resources>

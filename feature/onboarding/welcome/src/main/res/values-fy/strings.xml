@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources xmlns:xliff="urn:oasis:names:tc:xliff:document:1.2">
+    <string name="onboarding_welcome_start_button">Starte</string>
+    <string name="onboarding_welcome_import_button">K-9-ynstellingen ymportearje</string>
+    <string name="onboarding_welcome_text">In iepen boarne, op privacy rjochte en advertinsjefrije e-mail-app foar Android.</string>
+</resources>
